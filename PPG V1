@@ -1,0 +1,1074 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  onAuthStateChanged,
+  signInWithCustomToken
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  serverTimestamp,
+  setDoc,
+  getDoc,
+  where,
+  getDocs,
+  runTransaction 
+} from 'firebase/firestore';
+import { 
+  ShoppingBag, 
+  User, 
+  Plus, 
+  Minus, 
+  Trash2, 
+  LogOut, 
+  Edit, 
+  Camera, 
+  Image as ImageIcon, 
+  Gift, 
+  Eye, 
+  ChevronDown,
+  ChevronUp,
+  Coins, 
+  Save,  
+  X as XIcon,
+  History, 
+  ArrowLeft,
+  AlertCircle,
+  CheckCircle,
+  Truck, 
+  Calendar,
+  DollarSign,
+  Package, 
+  ClipboardList,
+  Lock 
+} from 'lucide-react';
+
+// --- Firebase Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- Constants ---
+const TIERS = {
+  BRONZE: { name: '銅牌會員', minPoints: 0, color: 'text-[#8d7b68]' },
+  SILVER: { name: '銀牌會員', minPoints: 1000, color: 'text-[#a4907c]' },
+  GOLD: { name: '金牌會員', minPoints: 5000, color: 'text-[#c8b6a6]' },
+};
+
+const STATUS_MAP = {
+  pending: { label: '處理中', color: 'bg-[#d6c0b0]' },
+  purchasing: { label: '採購中', color: 'bg-[#b08d79]' },
+  completed: { label: '已完成', color: 'bg-[#8d7b68]' },
+  cancelled: { label: '已取消', color: 'bg-red-400' },
+};
+
+// --- Helper Functions ---
+const getTier = (points) => {
+  if (points >= 5000) return TIERS.GOLD;
+  if (points >= 1000) return TIERS.SILVER;
+  return TIERS.BRONZE;
+};
+
+const parsePrice = (priceStr) => {
+  if (typeof priceStr === 'number') return priceStr;
+  if (!priceStr) return 0;
+  const num = parseFloat(String(priceStr).replace(/[^0-9.]/g, ''));
+  return isNaN(num) ? 0 : num;
+};
+
+const formatDate = (seconds) => {
+  if (!seconds) return '處理中...';
+  const date = new Date(seconds * 1000);
+  return date.toLocaleString('zh-TW', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+};
+
+// --- Components ---
+
+const AuthScreen = ({ onRegister, onLogin, onAdminLogin, isProcessing }) => {
+  const [activeTab, setActiveTab] = useState('member'); 
+  const [isRegistering, setIsRegistering] = useState(false); 
+  const [errorMsg, setErrorMsg] = useState(''); 
+
+  const [formData, setFormData] = useState({
+    name: '', lineNickname: '', phone: '', email: '', password: '', 
+    loginName: '', loginPassword: '',
+    adminId: '', adminPwd: ''
+  });
+
+  const handleTabChange = (tab) => {
+    setActiveTab(tab);
+    setIsRegistering(false);
+    setErrorMsg('');
+  };
+
+  const handleRegisterSubmit = (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    if (!formData.name || !formData.password) {
+        setErrorMsg('請填寫姓名與密碼');
+        return;
+    }
+    onRegister({
+      name: formData.name,
+      lineNickname: formData.lineNickname,
+      phone: formData.phone,
+      email: formData.email,
+      password: formData.password,
+    });
+  };
+
+  const handleLoginSubmit = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    if (!formData.loginName || !formData.loginPassword) {
+        setErrorMsg('請輸入帳號與密碼');
+        return;
+    }
+    
+    const result = await onLogin(formData.loginName, formData.loginPassword);
+    
+    if (result && !result.success) {
+        setErrorMsg(result.message);
+    }
+  };
+
+  const handleAdminSubmit = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    
+    if (!formData.adminId || !formData.adminPwd) {
+        setErrorMsg('請輸入管理員 ID 與密碼');
+        return;
+    }
+
+    const result = await onAdminLogin(formData.adminId, formData.adminPwd);
+    if (result && !result.success) {
+        setErrorMsg(result.message);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-[#f4efe9] flex items-center justify-center p-4 font-sans text-[#594a42]">
+      <div className="bg-white p-8 rounded-xl shadow-lg w-full max-w-md border border-[#e8e0d9]">
+        <h1 className="text-3xl font-bold text-center mb-6 text-[#b08d79]">佩佩豬不專業代購</h1>
+        
+        <div className="flex mb-6 border-b border-[#e8e0d9]">
+          <button 
+            className={`flex-1 py-2 ${activeTab === 'member' ? 'border-b-2 border-[#b08d79] text-[#b08d79] font-bold' : 'text-[#9c8c84]'}`}
+            onClick={() => handleTabChange('member')}
+          >
+            會員專區
+          </button>
+          <button 
+            className={`flex-1 py-2 ${activeTab === 'admin' ? 'border-b-2 border-[#b08d79] text-[#b08d79] font-bold' : 'text-[#9c8c84]'}`}
+            onClick={() => handleTabChange('admin')}
+          >
+            管理員後台
+          </button>
+        </div>
+
+        {errorMsg && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm flex items-center gap-2 animate-pulse">
+                <AlertCircle size={16} />
+                {errorMsg}
+            </div>
+        )}
+
+        {activeTab === 'admin' ? (
+          <form onSubmit={handleAdminSubmit} className="space-y-4 animate-fade-in">
+            <div>
+              <label className="block text-sm font-medium text-[#6e5d54]">管理員 ID</label>
+              <input type="text" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                value={formData.adminId} onChange={e => setFormData({...formData, adminId: e.target.value})} placeholder="請輸入管理員 ID" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#6e5d54]">密碼</label>
+              <input type="password" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                value={formData.adminPwd} onChange={e => setFormData({...formData, adminPwd: e.target.value})} placeholder="請輸入密碼" />
+            </div>
+            <button type="submit" disabled={isProcessing} className="w-full bg-[#b08d79] text-white py-2 rounded-md hover:bg-[#91715f] transition-colors disabled:opacity-50">
+              {isProcessing ? '驗證中...' : '管理員登入'}
+            </button>
+          </form>
+        ) : (
+          <div>
+            {!isRegistering ? (
+              <form onSubmit={handleLoginSubmit} className="space-y-4 animate-fade-in">
+                <div className="text-center mb-2 text-[#b08d79] font-bold">會員登入</div>
+                <div>
+                  <label className="block text-sm font-medium text-[#6e5d54]">會員姓名</label>
+                  <input required type="text" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                    value={formData.loginName} onChange={e => setFormData({...formData, loginName: e.target.value})} placeholder="請輸入註冊時的姓名" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#6e5d54]">密碼</label>
+                  <input required type="password" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                    value={formData.loginPassword} onChange={e => setFormData({...formData, loginPassword: e.target.value})} placeholder="請輸入密碼" />
+                </div>
+                <button type="submit" disabled={isProcessing} className="w-full bg-[#b08d79] text-white py-2 rounded-md hover:bg-[#91715f] transition-colors disabled:opacity-50 shadow-sm">
+                  {isProcessing ? '登入中...' : '登入'}
+                </button>
+                <div className="mt-4 pt-4 border-t border-[#f4efe9] text-center">
+                  <p className="text-sm text-[#9c8c84] mb-2">第一次購物嗎？</p>
+                  <button type="button" onClick={() => {setIsRegistering(true); setErrorMsg('');}} className="text-[#b08d79] font-bold text-sm hover:underline">點此註冊新會員</button>
+                </div>
+              </form>
+            ) : (
+              <form onSubmit={handleRegisterSubmit} className="space-y-4 animate-fade-in">
+                 <div className="text-center mb-2 text-[#b08d79] font-bold">新會員註冊</div>
+                <div>
+                  <label className="block text-sm font-medium text-[#6e5d54]">會員姓名 <span className="text-xs text-[#9c8c84]">(登入用)</span></label>
+                  <input required type="text" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                    value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#6e5d54]">密碼 <span className="text-xs text-[#9c8c84]">(登入用)</span></label>
+                  <input required type="password" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                    value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} placeholder="請設定密碼" />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                   <div>
+                    <label className="block text-sm font-medium text-[#6e5d54]">LINE 暱稱</label>
+                    <input required type="text" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                        value={formData.lineNickname} onChange={e => setFormData({...formData, lineNickname: e.target.value})} />
+                   </div>
+                   <div>
+                    <label className="block text-sm font-medium text-[#6e5d54]">手機</label>
+                    <input required type="tel" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                        value={formData.phone} onChange={e => setFormData({...formData, phone: e.target.value})} />
+                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-[#6e5d54]">Email</label>
+                  <input required type="email" className="mt-1 w-full p-2 border border-[#d6c0b0] rounded-md focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                    value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} />
+                </div>
+                <button type="submit" disabled={isProcessing} className="w-full bg-[#8d7b68] text-white py-2 rounded-md hover:bg-[#6e5d54] transition-colors disabled:opacity-50 shadow-sm">
+                  {isProcessing ? '註冊中...' : '確認註冊'}
+                </button>
+                <div className="mt-2 text-center">
+                  <button type="button" onClick={() => {setIsRegistering(false); setErrorMsg('');}} className="text-[#9c8c84] text-xs hover:text-[#b08d79]">已有帳號？返回登入</button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// 2. Admin Dashboard
+const SysViewAdmin = ({ 
+  products, orders, members, 
+  onAddProduct, onUpdateProduct, onDeleteProduct, 
+  onUpdateOrderStatus, onPointTransaction, onUpdateMemberProfile,
+  onUpdateOrderVendorInfo, 
+  onSwitchToCustomerView, onLogout 
+}) => {
+  const [activeTab, setActiveTab] = useState('orders'); 
+  
+  // Product Edit State
+  const [editingId, setEditingId] = useState(null);
+  const [newProduct, setNewProduct] = useState({ name: '', price: '', image: '', options: '' });
+
+  // Member Edit State
+  const [editingMember, setEditingMember] = useState(null); 
+  const [editMemberForm, setEditMemberForm] = useState({ name: '', phone: '', lineNickname: '', email: '' });
+
+  // Point Transaction State
+  const [pointTransMember, setPointTransMember] = useState(null);
+  const [pointForm, setPointForm] = useState({ type: 'add', amount: '', reason: '' });
+
+  // Vendor Tracking State
+  const [editingVendorOrder, setEditingVendorOrder] = useState(null);
+  const [vendorForm, setVendorForm] = useState({ 
+    vendorName: '', 
+    vendorTrackingNumber: '', 
+    costAmount: '',
+    estArrivalDate: '',
+    isShipped: false,
+    isArrivedTaiwan: false,
+    note: '' 
+  });
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => setNewProduct({...newProduct, image: reader.result});
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleProductSubmit = async (e) => {
+    e.preventDefault();
+    if (!newProduct.name || !newProduct.price) return;
+    
+    const productData = {
+      ...newProduct,
+      price: newProduct.price,
+      options: typeof newProduct.options === 'string' 
+        ? newProduct.options.split(',').map(o => o.trim()).filter(o => o) 
+        : newProduct.options
+    };
+
+    if (editingId) {
+      await onUpdateProduct(editingId, productData);
+      setEditingId(null);
+    } else {
+      await onAddProduct(productData);
+    }
+    setNewProduct({ name: '', price: '', image: '', options: '' });
+  };
+
+  const startEditing = (product) => {
+    setEditingId(product.id);
+    setNewProduct({
+      name: product.name, 
+      price: product.price, 
+      image: product.image || '',
+      options: product.options ? product.options.join(', ') : ''
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const startEditingMember = (member) => {
+    setEditingMember(member);
+    setEditMemberForm({
+        name: member.name || '',
+        phone: member.phone || '',
+        lineNickname: member.lineNickname || '',
+        email: member.email || ''
+    });
+  };
+
+  const handleMemberSubmit = async (e) => {
+    e.preventDefault();
+    if (!editingMember) return;
+    await onUpdateMemberProfile(editingMember.id, editMemberForm);
+    setEditingMember(null);
+  };
+
+  // Points Handler
+  const openPointModal = (member) => {
+    setPointTransMember(member);
+    setPointForm({ type: 'add', amount: '', reason: '' });
+  };
+
+  const handlePointSubmit = async (e) => {
+    e.preventDefault();
+    if (!pointTransMember || !pointForm.amount) return;
+    await onPointTransaction(pointTransMember.id, pointForm.type, parseInt(pointForm.amount), pointForm.reason);
+    setPointTransMember(null);
+  };
+
+  // Vendor Tracking Handler (Updated with more fields)
+  const openVendorModal = (order) => {
+    setEditingVendorOrder(order);
+    setVendorForm({
+      vendorName: order.vendorName || '',
+      vendorTrackingNumber: order.vendorTrackingNumber || '',
+      costAmount: order.costAmount || '',
+      estArrivalDate: order.estArrivalDate || '',
+      isShipped: order.isShipped || false,
+      isArrivedTaiwan: order.isArrivedTaiwan || false,
+      note: order.note || ''
+    });
+  };
+
+  const handleVendorSubmit = async (e) => {
+    e.preventDefault();
+    if (!editingVendorOrder) return;
+    await onUpdateOrderVendorInfo(editingVendorOrder.id, vendorForm);
+    setEditingVendorOrder(null);
+  };
+
+  // [FIX] 新增：刪除廠商追蹤資料
+  const handleDeleteVendorInfo = async () => {
+    if (!editingVendorOrder) return;
+    if (confirm('確定要刪除此筆廠商追蹤資料嗎？')) {
+        await onUpdateOrderVendorInfo(editingVendorOrder.id, {
+            vendorName: null,
+            vendorTrackingNumber: null,
+            costAmount: null,
+            estArrivalDate: null,
+            isShipped: false,
+            isArrivedTaiwan: false,
+            note: null
+        });
+        setEditingVendorOrder(null);
+    }
+  };
+
+  return (
+    <div className="p-4 md:p-8 max-w-7xl mx-auto text-[#594a42] relative">
+      <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+        <h2 className="text-2xl font-bold text-[#594a42]">管理員後台</h2>
+        <div className="flex gap-2 w-full md:w-auto">
+          <button onClick={onLogout} className="flex-1 md:flex-none justify-center bg-[#d6c0b0] text-[#594a42] px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-[#c8b6a6] transition-colors text-sm font-bold">
+            <LogOut size={18} /> 登出
+          </button>
+          <button onClick={onSwitchToCustomerView} className="flex-1 md:flex-none justify-center bg-[#b08d79] text-white px-4 py-2 rounded-lg flex items-center gap-2 hover:bg-[#91715f] transition-colors text-sm shadow-sm">
+            <Eye size={18} /> 預覽商店
+          </button>
+        </div>
+      </div>
+      
+      <div className="flex space-x-2 md:space-x-4 mb-6 overflow-x-auto pb-2 scrollbar-hide">
+        <button onClick={() => setActiveTab('orders')} className={`px-4 py-2 rounded-full whitespace-nowrap transition-colors ${activeTab === 'orders' ? 'bg-[#b08d79] text-white' : 'bg-[#e8e0d9] text-[#6e5d54]'}`}>訂單 ({orders.length})</button>
+        <button onClick={() => setActiveTab('products')} className={`px-4 py-2 rounded-full whitespace-nowrap transition-colors ${activeTab === 'products' ? 'bg-[#b08d79] text-white' : 'bg-[#e8e0d9] text-[#6e5d54]'}`}>商品管理</button>
+        <button onClick={() => setActiveTab('members')} className={`px-4 py-2 rounded-full whitespace-nowrap transition-colors ${activeTab === 'members' ? 'bg-[#b08d79] text-white' : 'bg-[#e8e0d9] text-[#6e5d54]'}`}>會員管理 ({members.length})</button>
+        <button onClick={() => setActiveTab('points')} className={`px-4 py-2 rounded-full whitespace-nowrap transition-colors ${activeTab === 'points' ? 'bg-[#b08d79] text-white' : 'bg-[#e8e0d9] text-[#6e5d54]'}`}>點數管理</button>
+        <button onClick={() => setActiveTab('vendor')} className={`px-4 py-2 rounded-full whitespace-nowrap transition-colors ${activeTab === 'vendor' ? 'bg-[#b08d79] text-white' : 'bg-[#e8e0d9] text-[#6e5d54]'}`}>廠商追蹤</button>
+      </div>
+
+      {activeTab === 'products' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1 bg-white p-6 rounded-xl shadow-sm border border-[#e8e0d9] h-fit">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold text-[#594a42]">{editingId ? '編輯商品' : '新增商品'}</h3>
+              {editingId && <button onClick={() => {setEditingId(null); setNewProduct({ name: '', price: '', image: '', options: '' })}} className="text-xs text-[#9c8c84]">取消</button>}
+            </div>
+            <form onSubmit={handleProductSubmit} className="space-y-4">
+              <input type="text" placeholder="商品名稱" required className="w-full p-2 border border-[#d6c0b0] rounded bg-[#faf7f5]" value={newProduct.name} onChange={e => setNewProduct({...newProduct, name: e.target.value})} />
+              <input type="text" placeholder="價格 (如 $100)" required className="w-full p-2 border border-[#d6c0b0] rounded bg-[#faf7f5]" value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: e.target.value})} />
+              <div className="border-2 border-dashed border-[#d6c0b0] rounded p-4 text-center cursor-pointer hover:bg-[#faf7f5] relative">
+                <input type="file" accept="image/*" onChange={handleImageUpload} className="absolute inset-0 opacity-0 cursor-pointer" />
+                {newProduct.image ? <img src={newProduct.image} className="h-32 mx-auto object-cover rounded" alt="Preview" /> : <div className="text-[#9c8c84]"><Camera className="mx-auto mb-1" /><span className="text-sm">上傳圖片</span></div>}
+              </div>
+              <input type="text" placeholder="選項 (如: 紅色, 藍色)" className="w-full p-2 border border-[#d6c0b0] rounded bg-[#faf7f5]" value={newProduct.options} onChange={e => setNewProduct({...newProduct, options: e.target.value})} />
+              <button type="submit" className="w-full bg-[#8d7b68] text-white py-2 rounded hover:bg-[#6e5d54] flex items-center justify-center gap-2">{editingId ? <Edit size={18} /> : <Plus size={18} />} {editingId ? '更新' : '新增'}</button>
+            </form>
+          </div>
+          <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {products.map(product => (
+              <div key={product.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#e8e0d9] flex gap-4 items-start relative">
+                <div className="w-20 h-20 bg-[#f4efe9] rounded overflow-hidden flex-shrink-0">
+                  {product.image ? <img src={product.image} className="w-full h-full object-cover" alt={product.name} /> : <ImageIcon className="w-full h-full p-4 text-[#d6c0b0]" />}
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-bold text-[#594a42]">{product.name}</h4>
+                  <p className="text-[#b08d79] font-bold">${product.price}</p>
+                  <p className="text-xs text-[#9c8c84]">選項: {product.options?.join(', ')}</p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => startEditing(product)} className="text-[#9c8c84] hover:text-[#b08d79]"><Edit size={20} /></button>
+                  <button onClick={() => onDeleteProduct(product.id)} className="text-[#9c8c84] hover:text-red-500"><Trash2 size={20} /></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'orders' && (
+        <div className="space-y-4">
+          {orders.length === 0 && <p className="text-[#9c8c84] text-center">目前無訂單</p>}
+          {orders.map(order => {
+             const statusInfo = STATUS_MAP[order.status] || STATUS_MAP['pending'];
+             return (
+              <div key={order.id} className="bg-white p-6 rounded-xl shadow-sm border-l-4 border-[#b08d79]">
+                <div className="flex justify-between flex-wrap gap-2 mb-4">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-lg text-[#594a42]">{order.displayId || `#${order.id.slice(-6).toUpperCase()}`}</span>
+                      <span className={`text-xs px-2 py-1 rounded-full text-white ${statusInfo.color}`}>
+                        {statusInfo.label}
+                      </span>
+                    </div>
+                    <p className="text-sm text-[#6e5d54] mt-1">{order.userName} ({order.userLine})</p>
+                    <p className="text-xs text-[#9c8c84]">{formatDate(order.createdAt?.seconds)}</p>
+                  </div>
+                  <div className="flex gap-2 items-start">
+                    <button onClick={() => onUpdateOrderStatus(order.id, 'purchasing')} className="px-3 py-1 bg-[#f4efe9] hover:bg-[#e8e0d9] text-xs rounded transition-colors">採購</button>
+                    <button onClick={() => onUpdateOrderStatus(order.id, 'completed')} className="px-3 py-1 bg-[#f4efe9] hover:bg-[#e8e0d9] text-xs rounded transition-colors">完成</button>
+                    <button onClick={() => onUpdateOrderStatus(order.id, 'cancelled')} className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded transition-colors">取消</button>
+                  </div>
+                </div>
+                <div className="bg-[#faf7f5] p-3 rounded text-sm space-y-1">
+                  {order.items.map((item, idx) => (
+                    <div key={idx} className="flex justify-between">
+                      <span>{item.name} <span className="text-[#9c8c84] text-xs">({item.option})</span> x {item.qty}</span>
+                      <span>${parsePrice(item.price)*item.qty}</span>
+                    </div>
+                  ))}
+                  <div className="border-t border-[#e8e0d9] pt-2 flex justify-between font-bold mt-2"><span>總計</span><span>${order.total}</span></div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      
+      {activeTab === 'members' && (
+        <>
+        <div className="overflow-x-auto bg-white rounded-xl shadow-sm border border-[#e8e0d9]">
+          <table className="w-full text-left">
+            <thead className="bg-[#f4efe9]"><tr className="text-[#594a42]">
+                <th className="p-3 whitespace-nowrap">姓名</th>
+                <th className="p-3 whitespace-nowrap">LINE</th>
+                <th className="p-3 whitespace-nowrap">電話</th>
+                <th className="p-3 whitespace-nowrap">Email</th>
+                <th className="p-3 whitespace-nowrap">操作</th>
+            </tr></thead>
+            <tbody>
+              {members.map(m => (
+                <tr key={m.id} className="border-b border-[#f4efe9]">
+                  <td className="p-3">{m.name}</td>
+                  <td className="p-3">{m.lineNickname}</td>
+                  <td className="p-3">{m.phone}</td>
+                  <td className="p-3">{m.email}</td>
+                  <td className="p-3">
+                    <button 
+                        onClick={() => startEditingMember(m)}
+                        className="text-[#594a42] bg-[#f4efe9] hover:bg-[#e8e0d9] px-3 py-1 rounded text-sm flex items-center gap-1"
+                    >
+                        <Edit size={14}/> 修改
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Member Edit Modal */}
+        {editingMember && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden animate-fade-in">
+                    <div className="bg-[#f4efe9] p-4 flex justify-between items-center border-b border-[#e8e0d9]">
+                        <h3 className="font-bold text-[#594a42]">修改會員資料</h3>
+                        <button onClick={() => setEditingMember(null)} className="text-[#9c8c84] hover:text-[#594a42]"><XIcon size={20}/></button>
+                    </div>
+                    <form onSubmit={handleMemberSubmit} className="p-6 space-y-4">
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">姓名</label>
+                            <input required type="text" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={editMemberForm.name} onChange={e => setEditMemberForm({...editMemberForm, name: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">LINE 暱稱</label>
+                            <input required type="text" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={editMemberForm.lineNickname} onChange={e => setEditMemberForm({...editMemberForm, lineNickname: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">電話</label>
+                            <input required type="text" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={editMemberForm.phone} onChange={e => setEditMemberForm({...editMemberForm, phone: e.target.value})} />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">Email</label>
+                            <input required type="email" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={editMemberForm.email} onChange={e => setEditMemberForm({...editMemberForm, email: e.target.value})} />
+                        </div>
+                        <div className="pt-2 flex gap-3">
+                            <button type="button" onClick={() => setEditingMember(null)} className="flex-1 py-2 text-[#9c8c84] hover:bg-[#f4efe9] rounded">取消</button>
+                            <button type="submit" className="flex-1 bg-[#b08d79] text-white py-2 rounded hover:bg-[#91715f]">儲存變更</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        )}
+        </>
+      )}
+
+      {activeTab === 'points' && (
+        <>
+        <div className="overflow-x-auto bg-white rounded-xl shadow-sm border border-[#e8e0d9]">
+          <div className="p-4 bg-[#fcfbf9] border-b border-[#e8e0d9] text-sm text-[#9c8c84]">
+            在此管理會員的點數。點擊操作按鈕進行增減。
+          </div>
+          <table className="w-full text-left">
+            <thead className="bg-[#f4efe9]"><tr className="text-[#594a42]">
+                <th className="p-3">姓名</th>
+                <th className="p-3">LINE</th>
+                <th className="p-3">目前點數</th>
+                <th className="p-3">等級</th>
+                <th className="p-3">操作</th>
+            </tr></thead>
+            <tbody>
+              {members.map(m => (
+                <tr key={m.id} className="border-b border-[#f4efe9]">
+                  <td className="p-3 font-medium">{m.name}</td>
+                  <td className="p-3 text-sm">{m.lineNickname}</td>
+                  <td className="p-3 font-bold text-[#b08d79]">{m.points || 0}</td>
+                  <td className="p-3 text-sm text-[#9c8c84]">{getTier(m.points||0).name}</td>
+                  <td className="p-3">
+                    <button onClick={() => openPointModal(m)} className="text-[#b08d79] hover:bg-[#f4efe9] px-3 py-1 rounded border border-[#d6c0b0] text-sm flex items-center gap-1">
+                        <Coins size={14}/> 點數作業
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Point Transaction Modal */}
+        {pointTransMember && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-xl shadow-xl w-full max-w-sm overflow-hidden animate-fade-in">
+                    <div className="bg-[#f4efe9] p-4 border-b border-[#e8e0d9]">
+                        <h3 className="font-bold text-[#594a42]">點數作業 - {pointTransMember.name}</h3>
+                        <p className="text-xs text-[#9c8c84] mt-1">目前點數: {pointTransMember.points || 0}</p>
+                    </div>
+                    <form onSubmit={handlePointSubmit} className="p-6 space-y-4">
+                        <div className="flex gap-2">
+                            <button 
+                                type="button" 
+                                onClick={() => setPointForm({...pointForm, type: 'add'})}
+                                className={`flex-1 py-2 rounded border ${pointForm.type === 'add' ? 'bg-[#b08d79] text-white border-[#b08d79]' : 'bg-white text-[#6e5d54] border-[#d6c0b0]'}`}
+                            >
+                                發放點數 (+)
+                            </button>
+                            <button 
+                                type="button" 
+                                onClick={() => setPointForm({...pointForm, type: 'deduct'})}
+                                className={`flex-1 py-2 rounded border ${pointForm.type === 'deduct' ? 'bg-[#8d7b68] text-white border-[#8d7b68]' : 'bg-white text-[#6e5d54] border-[#d6c0b0]'}`}
+                            >
+                                抵用點數 (-)
+                            </button>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">數量</label>
+                            <input required type="number" min="1" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={pointForm.amount} onChange={e => setPointForm({...pointForm, amount: e.target.value})} placeholder="輸入點數" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">事由 / 備註</label>
+                            <input required type="text" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={pointForm.reason} onChange={e => setPointForm({...pointForm, reason: e.target.value})} placeholder="例如: 訂單折抵, 生日禮金" />
+                        </div>
+                        <div className="pt-2 flex gap-3">
+                            <button type="button" onClick={() => setPointTransMember(null)} className="flex-1 py-2 text-[#9c8c84] hover:bg-[#f4efe9] rounded">取消</button>
+                            <button type="submit" className="flex-1 bg-[#b08d79] text-white py-2 rounded hover:bg-[#91715f]">確認</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        )}
+        </>
+      )}
+
+      {/* 廠商追蹤 Tab Content (Internal Use Only) */}
+      {activeTab === 'vendor' && (
+        <>
+        <div className="overflow-x-auto bg-white rounded-xl shadow-sm border border-[#e8e0d9]">
+          <div className="p-4 bg-[#fcfbf9] border-b border-[#e8e0d9] text-sm text-[#9c8c84] flex items-center gap-2">
+            <Lock size={14}/> 內部功能：追蹤採購進度 (顧客不可見)。
+          </div>
+          <table className="w-full text-left">
+            <thead className="bg-[#f4efe9]"><tr className="text-[#594a42]">
+                <th className="p-3">訂單編號</th>
+                <th className="p-3">顧客</th>
+                <th className="p-3">商品概覽</th>
+                <th className="p-3">廠商 / 物流單號</th>
+                <th className="p-3">採購金額</th>
+                <th className="p-3">操作</th>
+            </tr></thead>
+            <tbody>
+              {/* 只顯示狀態非 'pending' 的訂單 (已確認要處理的) */}
+              {orders.filter(o => o.status !== 'pending' && o.status !== 'cancelled').map(order => {
+                const hasTracking = order.vendorName || order.vendorTrackingNumber;
+                return (
+                <tr key={order.id} className="border-b border-[#f4efe9]">
+                  <td className="p-3 font-medium">{order.displayId || `#${order.id.slice(-6)}`}</td>
+                  <td className="p-3 text-sm">{order.userName}</td>
+                  <td className="p-3 text-sm truncate max-w-[150px]">
+                    {order.items.map(i => i.name).join(', ')}
+                  </td>
+                  <td className="p-3 text-sm">
+                    {order.vendorName ? (
+                      <div>
+                        <div className="font-bold text-[#b08d79]">{order.vendorName}</div>
+                        {order.vendorTrackingNumber && <div className="text-xs text-[#9c8c84]">{order.vendorTrackingNumber}</div>}
+                      </div>
+                    ) : <span className="text-gray-300 italic">未填寫</span>}
+                  </td>
+                  <td className="p-3 text-sm">{order.costAmount ? `NT$${order.costAmount}` : '-'}</td>
+                  <td className="p-3">
+                    <button 
+                        onClick={() => openVendorModal(order)} 
+                        className={`px-3 py-1 rounded text-sm flex items-center gap-1 transition-colors ${hasTracking ? 'bg-white text-[#b08d79] border border-[#d6c0b0] hover:bg-[#f4efe9]' : 'bg-[#b08d79] text-white hover:bg-[#91715f]'}`}
+                    >
+                        {hasTracking ? <><Edit size={14}/> 編輯追蹤</> : <><Plus size={14}/> 新增追蹤</>}
+                    </button>
+                  </td>
+                </tr>
+              )})}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Vendor Edit Modal (Refined Layout) */}
+        {editingVendorOrder && (
+            <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-xl shadow-xl w-full max-w-lg overflow-hidden animate-fade-in">
+                    <div className="bg-[#f4efe9] p-4 border-b border-[#e8e0d9] flex gap-2 items-center">
+                        <div className="bg-white p-2 rounded-full text-[#b08d79]"><Lock size={20} /></div>
+                        <div>
+                            <h3 className="font-bold text-[#594a42] text-lg">廠商採購追蹤 (內部)</h3>
+                            <p className="text-xs text-[#9c8c84]">此資訊僅管理員可見，不會顯示給顧客</p>
+                        </div>
+                    </div>
+                    <form onSubmit={handleVendorSubmit} className="p-6 space-y-4">
+                        {/* Row 1 */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-bold text-[#6e5d54] mb-1">訂單編號</label>
+                                <div className="w-full p-2 border border-[#d6c0b0] bg-[#f4efe9] rounded text-[#9c8c84] cursor-not-allowed">
+                                    {editingVendorOrder.displayId || 'Unknown'}
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-[#6e5d54] mb-1">廠商名稱 (必填)</label>
+                                <input type="text" required className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                    value={vendorForm.vendorName} onChange={e => setVendorForm({...vendorForm, vendorName: e.target.value})} placeholder="例如: 日本官網" />
+                            </div>
+                        </div>
+
+                        {/* Row 2 */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-bold text-[#6e5d54] mb-1">訂單總金額 (NT$)</label>
+                                <div className="relative">
+                                    <span className="absolute left-2 top-2 text-[#9c8c84]"><DollarSign size={16}/></span>
+                                    <input type="number" className="w-full p-2 pl-7 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                        value={vendorForm.costAmount} onChange={e => setVendorForm({...vendorForm, costAmount: e.target.value})} placeholder="0" />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-[#6e5d54] mb-1">預估出貨時間</label>
+                                <div className="relative">
+                                    <input type="date" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                        value={vendorForm.estArrivalDate} onChange={e => setVendorForm({...vendorForm, estArrivalDate: e.target.value})} />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Tracking Number */}
+                        <div>
+                            <label className="block text-sm font-bold text-[#6e5d54] mb-1">物流單號</label>
+                            <input type="text" className="w-full p-2 border border-[#d6c0b0] rounded focus:outline-none focus:ring-2 focus:ring-[#b08d79]"
+                                value={vendorForm.vendorTrackingNumber} onChange={e => setVendorForm({...vendorForm, vendorTrackingNumber: e.target.value})} placeholder="請輸入訂單編號" />
+                        </div>
+
+                        {/* Checkboxes Row */}
+                        <div className="flex gap-6 bg-[#faf7f5] p-3 rounded-lg">
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" className="w-4 h-4 accent-[#b08d79]" 
+                                    checked={vendorForm.isShipped} onChange={e => setVendorForm({...vendorForm, isShipped: e.target.checked})} />
+                                <span className="text-sm text-[#6e5d54]">廠商是否已出貨？</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" className="w-4 h-4 accent-[#b08d79]"
+                                    checked={vendorForm.isArrivedTaiwan} onChange={e => setVendorForm({...vendorForm, isArrivedTaiwan: e.target.checked})} />
+                                <span className="text-sm text-[#6e5d54]">是否已集運回台？</span>
+                            </label>
+                        </div>
+
+                        <div className="pt-4 flex gap-3">
+                            <button type="button" onClick={() => setEditingVendorOrder(null)} className="py-3 px-4 text-[#9c8c84] hover:bg-[#f4efe9] rounded-lg">取消</button>
+                            
+                            {/* 如果已經有廠商資料，才顯示刪除按鈕 */}
+                            {editingVendorOrder.vendorName && (
+                                <button type="button" onClick={handleDeleteVendorInfo} className="py-3 px-4 text-red-500 border border-red-200 hover:bg-red-50 rounded-lg flex items-center gap-1">
+                                    <Trash2 size={18}/> 刪除此紀錄
+                                </button>
+                            )}
+
+                            <button type="submit" className="flex-1 bg-[#8d7b68] text-white py-3 rounded-lg hover:bg-[#6e5d54] font-bold flex items-center justify-center gap-2">
+                                <Save size={18}/> 儲存紀錄
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        )}
+        </>
+      )}
+    </div>
+  );
+};
+
+// 3. Customer Shop View
+const SysViewCustomer = ({ products, cart, onAddToCart, onRemoveFromCart, onCheckout, user, orders, pointHistory, isAdmin, onExitAdminPreview, onLogout }) => {
+  const [activeView, setActiveView] = useState('shop');
+  const [selectedOptions, setSelectedOptions] = useState({});
+  const [quantities, setQuantities] = useState({});
+  const [expandedOrderId, setExpandedOrderId] = useState(null);
+  
+  // 新增 Toast 狀態
+  const [showToast, setShowToast] = useState(false);
+  const [toastMsg, setToastMsg] = useState('');
+
+  // 計算購物車總商品數
+  const cartTotalQty = cart.reduce((sum, item) => sum + item.qty, 0);
+
+  const handleAddToCartWrapper = (product, option, qty) => {
+    // 強制檢查規格
+    const hasValidOptions = Array.isArray(product.options) && product.options.length > 0 && product.options[0] !== "";
+    
+    if (hasValidOptions && !option) {
+        alert('請選擇規格！'); 
+        return;
+    }
+
+    const finalOption = option || '單一規格';
+
+    onAddToCart(product, finalOption, qty);
+    setToastMsg(`已成功加入購物車`);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 2000);
+  };
+
+  const handleCheckoutAndRedirect = async () => {
+    if (cart.length === 0) return;
+    await onCheckout();
+    setActiveView('profile');
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto pb-20 font-sans text-[#594a42]">
+      <div className="bg-white p-4 shadow-sm border-b border-[#e8e0d9] sticky top-0 z-10 flex justify-between items-center">
+        <h1 className="text-xl font-bold text-[#b08d79]">佩佩豬代購</h1>
+        <div className="flex gap-4 items-center">
+          <button onClick={onLogout} className="p-2 text-[#6e5d54] border-r border-[#e8e0d9] pr-3"><LogOut size={20} /></button>
+          <button onClick={() => setActiveView('cart')} className="relative p-2">
+            <ShoppingBag className="text-[#6e5d54]" />
+            {cart.length > 0 && <span className="absolute top-0 right-0 bg-[#b08d79] text-white text-xs w-5 h-5 flex items-center justify-center rounded-full animate-bounce">{cart.length}</span>}
+          </button>
+          <button onClick={() => setActiveView('profile')} className="p-2"><User className="text-[#6e5d54]" /></button>
+        </div>
+      </div>
+
+      {isAdmin && (
+        <div className="fixed bottom-24 right-4 z-50">
+          <button onClick={onExitAdminPreview} className="bg-[#594a42] bg-opacity-90 text-white px-4 py-3 rounded-full shadow-lg flex items-center gap-2 hover:scale-105 backdrop-blur-sm transition-transform">
+            <LogOut size={20} /> 返回後台
+          </button>
+        </div>
+      )}
+
+      {/* 成功加入購物車的提示框 (Toast) */}
+      {showToast && (
+        <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-black/80 text-white px-6 py-4 rounded-xl shadow-2xl z-50 flex items-center gap-3 animate-fade-in transition-opacity duration-300">
+            <CheckCircle className="text-green-400" size={24} />
+            <span className="font-bold text-lg">{toastMsg}</span>
+        </div>
+      )}
+
+      <div className="p-4">
+        {activeView === 'shop' && (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {products.map(product => (
+              <div key={product.id} className="bg-white rounded-xl shadow-sm border border-[#e8e0d9] overflow-hidden flex flex-col hover:shadow-md transition-shadow">
+                <div className="h-32 sm:h-48 bg-[#f4efe9] overflow-hidden flex items-center justify-center relative group">
+                  {product.image ? 
+                    <img src={product.image} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" alt={product.name} /> 
+                    : <ImageIcon size={32} className="text-[#d6c0b0]" />
+                  }
+                </div>
+                <div className="p-3 flex-1 flex flex-col">
+                  <h3 className="font-bold text-sm sm:text-lg text-[#594a42] mb-1 line-clamp-2">{product.name}</h3>
+                  <p className="text-[#b08d79] font-bold text-base sm:text-xl mb-3">${product.price}</p>
+                  
+                  {product.options && product.options.length > 0 && product.options[0] !== "" && (
+                    <div className="mb-3">
+                      <select 
+                        className={`w-full p-1 border rounded text-sm focus:outline-none focus:ring-1 focus:ring-[#b08d79] ${!selectedOptions[product.id] ? 'border-red-300 bg-red-50' : 'border-[#d6c0b0] bg-white'}`}
+                        onChange={(e) => setSelectedOptions({...selectedOptions, [product.id]: e.target.value})}
+                        value={selectedOptions[product.id] || ''}
+                      >
+                        <option value="">選擇規格</option>
+                        {product.options.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-center gap-2 mb-3 bg-[#faf7f5] rounded p-1">
+                    <button onClick={() => setQuantities({...quantities, [product.id]: Math.max(1, (quantities[product.id]||1)-1)})}>
+                        <Minus size={16} className="text-[#b08d79]"/>
+                    </button>
+                    <span className="text-sm font-bold w-6 text-center">{quantities[product.id]||1}</span>
+                    <button onClick={() => setQuantities({...quantities, [product.id]: (quantities[product.id]||1)+1})}>
+                        <Plus size={16} className="text-[#b08d79]"/>
+                    </button>
+                  </div>
+                  
+                  <button 
+                    onClick={() => handleAddToCartWrapper(product, selectedOptions[product.id], quantities[product.id]||1)} 
+                    className="mt-auto w-full bg-[#b08d79] text-white py-2 rounded text-sm active:bg-[#8d7b68] transition-colors"
+                  >
+                    加入購物車
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* ... Cart & Profile Views ... */}
+        {activeView === 'cart' && (
+          <div className="max-w-2xl mx-auto">
+            <h2 className="text-2xl font-bold mb-6 text-[#594a42]">購物車</h2>
+            {cart.length === 0 ? <div className="text-center py-12 text-[#9c8c84] flex flex-col items-center"><ShoppingBag size={48} className="mb-2 opacity-50"/>購物車是空的</div> : (
+              <div className="bg-white rounded-xl shadow-sm border border-[#e8e0d9]">
+                {cart.map((item, index) => (
+                  <div key={index} className="p-4 border-b border-[#f4efe9] flex justify-between items-center">
+                    <div>
+                        <h4 className="font-bold">{item.name}</h4>
+                        <p className="text-xs text-[#9c8c84]">{item.option}</p>
+                        <p className="text-[#b08d79]">${item.price} x {item.qty}</p>
+                    </div>
+                    <button onClick={() => onRemoveFromCart(index)}><Trash2 size={20} className="text-[#d6c0b0] hover:text-red-500" /></button>
+                  </div>
+                ))}
+                <div className="p-4 bg-[#faf7f5]">
+                  <div className="flex justify-between font-bold mb-4 text-[#594a42]"><span>總計</span><span>${cart.reduce((sum, item) => sum + (parsePrice(item.price) * item.qty), 0)}</span></div>
+                  <button onClick={handleCheckoutAndRedirect} className="w-full bg-[#b08d79] text-white py-3 rounded-lg font-bold hover:bg-[#91715f] transition-colors">送出訂單</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeView === 'profile' && (
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div 
+                className="bg-gradient-to-r from-[#b08d79] to-[#d6c0b0] rounded-xl p-6 text-white shadow-lg cursor-pointer hover:shadow-xl transition-shadow relative overflow-hidden group"
+                onClick={() => setActiveView('point_history')}
+            >
+              <div className="absolute right-4 top-4 opacity-50 group-hover:opacity-100 transition-opacity"><ChevronDown size={20} className="-rotate-90"/></div>
+              <h2 className="text-2xl font-bold">{user.name}</h2>
+              <p className="opacity-90">LINE: {user.lineNickname}</p>
+              <div className="flex gap-8 mt-6">
+                <div>
+                    <p className="text-sm opacity-90 flex items-center gap-1"><Coins size={14}/> 點數 (點擊查看紀錄)</p>
+                    <p className="text-3xl font-bold">{user.points || 0}</p>
+                </div>
+                <div><p className="text-sm opacity-90">等級</p><p className="text-xl font-bold mt-2">{getTier(user.points || 0).name}</p></div>
+              </div>
+            </div>
+            
+            <div className="bg-white rounded-xl shadow-sm border border-[#e8e0d9] p-6">
+              <h3 className="font-bold mb-4">訂單紀錄</h3>
+              <div className="space-y-4">
+                {orders.filter(o => o.userId === user.uid).map(order => {
+                  const statusInfo = STATUS_MAP[order.status] || STATUS_MAP['pending'];
+                  return (
+                  <div 
+                    key={order.id} 
+                    className="border-b border-[#f4efe9] pb-3 cursor-pointer hover:bg-[#faf7f5] transition-colors rounded p-2"
+                    onClick={() => setExpandedOrderId(expandedOrderId === order.id ? null : order.id)}
+                  >
+                    <div className="flex justify-between items-center">
+                      <div>
+                        {/* 使用新的 displayId 或回退到 ID 後6碼 */}
+                        <span className="font-bold text-sm">{order.displayId || `#${order.id.slice(-6).toUpperCase()}`}</span>
+                        <span className={`ml-2 text-xs px-2 py-0.5 rounded text-white ${statusInfo.color}`}>
+                          {statusInfo.label}
+                        </span>
+                        {/* 使用新的時間格式函數 */}
+                        <p className="text-xs text-[#9c8c84] mt-1">{formatDate(order.createdAt?.seconds)}</p>
+                      </div>
+                      <div className="text-right flex items-center gap-2">
+                        <p className="font-bold text-[#b08d79]">${order.total}</p>
+                        {expandedOrderId === order.id ? <ChevronUp size={16} className="text-[#9c8c84]" /> : <ChevronDown size={16} className="text-[#9c8c84]" />}
+                      </div>
+                    </div>
+                    
+                    {expandedOrderId === order.id && (
+                      <div className="mt-3 pt-3 border-t border-[#e8e0d9] bg-[#faf7f5] rounded p-3 text-sm animate-fade-in">
+                        <h4 className="font-bold mb-2 text-[#6e5d54]">訂購內容：</h4>
+                        <div className="space-y-2">
+                          {order.items.map((item, idx) => (
+                            <div key={idx} className="flex justify-between text-[#6e5d54]">
+                              <span>
+                                {item.name} 
+                                <span className="text-[#9c8c84] text-xs ml-1">({item.option})</span> 
+                                <span className="font-bold ml-1">x{item.qty}</span>
+                              </span>
+                              <span>${parsePrice(item.price) * item.qty}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-3 pt-2 border-t border-[#d6c0b0] flex justify-between font-bold text-[#594a42]">
+                          <span>總金額</span>
+                          <span>${order.total}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )})}
+                {orders.filter(o => o.userId === user.uid).length === 0 && <p className="text-center text-[#9c8c84] py-4">尚無訂單</p>}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeView === 'point_history' && (
+            <div className="max-w-2xl mx-auto space-y-4">
+                 <button onClick={() => setActiveView('profile')} className="flex items-center text-[#b08d79] font-bold mb-4 hover:underline">
+                    <ArrowLeft size={18} className="mr-1"/> 返回會員中心
+                 </button>
+                 <div className="bg-white rounded-xl shadow-sm border border-[#e8e0d9] p-6">
+                    <h3 className="font-bold mb-4 flex items-center gap-2"><History size={20}/> 點數使用紀錄</h3>
+                    <div className="space-y-0">
+                        {pointHistory.length === 0 ? <p className="text-center text-[#9c8c84] py-8">尚無點數紀錄</p> : 
+                            pointHistory.map(record => (
+                                <div key={record.id} className="flex justify-between items-center py-3 border-b border-[#f4efe9] last:border-0">
+                                    <div className="flex-1 mr-4">
+                                        <p className="font-bold text-[#594a42] text-sm md:text-base">{record.description || '無備註'}</p>
+                                        <p className="text-xs text-[#9c8c84]">{formatDate(record.createdAt?.seconds)}</p>
+                                    </div>
+                                    <div className={`font-bold whitespace-nowrap ${record.amount > 0 ? 'text-[#b08d79]' : 'text-green-600'}`}>
+                                        {record.amount > 0 ? `+${record.amount}` : record.amount}
+                                    </div>
+                                </div>
+                            ))
+                        }
+                    </div>
+                 </div>
+            </div>
+        )}
+      </div>
+      
+      {/* Bottom Navigation: [FIX] 新增購物車數量紅點 (Badge) */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-[#e8e0d9] flex justify-around p-3 z-50">
+        <button onClick={() => setActiveView('shop')} className={`flex flex-col items-center text-xs ${activeView === 'shop' ? 'text-[#b08d79]' : 'text-[#9c8c84]'}`}><Gift size={24} /> 商店</button>
+        <button onClick={() => setActiveView('cart')} className={`relative flex flex-col items-center text-xs ${activeView === 'cart' ? 'text-[#b08d79]' : 'text-[#9c8c84]'}`}>
+            <div className="relative">
+                <ShoppingBag size={24} />
+                {cartTotalQty > 0 && (
+                    <span className="absolute -top-1 -right-2 bg-[#b08d79] text-white text-[10px] w-4 h-4 flex items-center justify-center rounded-full animate-bounce">
+                        {cartTotalQty}
+                    </span>
+                )}
+            </div>
+            購物車
+        </button>
+        <button onClick={() => setActiveView('profile')} className={`flex flex-col items-center text-xs ${activeView === 'profile' || activeView === 'point_history' ? 'text-[#b08d79]' : 'text-[#9c8c84]'}`}><User size={24} /> 會員</button>
+      </div>
+    </div>
+  );
+};
